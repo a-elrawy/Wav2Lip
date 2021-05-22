@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "lipsync"
+version = "0.1.0"
+description = "AI lipsync"
+authors = [
+    "Prajwal <prajwalrenukanand@gmail.com>",
+    "Lars Vagnes <larsvagnes@gmail.com>"
+]
+
+[tool.poetry.dev-dependencies]
+poethepoet = "^0.10.0"
+
+[tool.poe.tasks]
+force-cuda11 = "python -m pip install torch==1.8.0+cu111 torchvision==0.9.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html"
+
+
+[tool.poetry.dependencies]
+python = ">=3.8,<3.10"
+librosa = "^0.8.0"
+numpy = "^1.20.0"
+opencv-contrib-python = "^4.5.2.52"
+opencv-python = "^4.5.2.52" 
+tqdm = "^4.60.0"
+numba = "^0.53.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
