@@ -1,0 +1,16 @@
+#Ignore everything
+**
+
+!face_detection
+!models
+!evaluation
+!results
+!temp
+!dockerignore
+!dockerfile
+!app.py
+!audio.py
+!inference.py
+!hparams.py
+!pyproject.toml
+!wav2lip_gan.pth
