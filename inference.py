@@ -7,6 +7,35 @@ from glob import glob
 import torch, face_detection
 from models import Wav2Lip
 import platform
+import time
+
+
+
+mel_step_size = 16
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print('Using {} for inference.'.format(device))
+
+def _load(checkpoint_path):
+	if device == 'cuda':
+		checkpoint = torch.load(checkpoint_path)
+	else:
+		checkpoint = torch.load(checkpoint_path,
+								map_location=lambda storage, loc: storage)
+	return checkpoint
+
+def load_model(path):
+	model = Wav2Lip()
+	print("Load checkpoint from: {}".format(path))
+	checkpoint = _load(path)
+	s = checkpoint["state_dict"]
+	new_s = {}
+	for k, v in s.items():
+		new_s[k.replace('module.', '')] = v
+	model.load_state_dict(new_s)
+
+	model = model.to(device)
+	return model.eval()
+
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
 
@@ -50,8 +79,16 @@ parser.add_argument('--rotate', default=False, action='store_true',
 parser.add_argument('--nosmooth', default=False, action='store_true',
 					help='Prevent smoothing face detections over a short temporal window')
 
+
+start = time.time()
 args = parser.parse_args()
 args.img_size = 96
+
+model = load_model(args.checkpoint_path)
+
+detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D, flip_input=False, device=device)
+
+print(f"Time taken for loading model: {time.time() - start}")
 
 if os.path.isfile(args.face) and args.face.split('.')[1] in ['jpg', 'png', 'jpeg']:
 	args.static = True
@@ -66,16 +103,16 @@ def get_smoothened_boxes(boxes, T):
 	return boxes
 
 def face_detect(images):
-	detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D, 
-											flip_input=False, device=device)
 
 	batch_size = args.face_det_batch_size
 	
 	while 1:
 		predictions = []
 		try:
+			start = time.time()
 			for i in tqdm(range(0, len(images), batch_size)):
 				predictions.extend(detector.get_detections_for_batch(np.array(images[i:i + batch_size])))
+				print(f"Time taken for face detection: {time.time() - start}")
 		except RuntimeError:
 			if batch_size == 1: 
 				raise RuntimeError('Image too big to run face detection on GPU. Please use the --resize_factor argument')
@@ -101,8 +138,14 @@ def face_detect(images):
 	boxes = np.array(results)
 	if not args.nosmooth: boxes = get_smoothened_boxes(boxes, T=5)
 	results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
+	
+	import pickle
 
-	del detector
+	with open("face_det_results.pkl", "wb") as f:
+		pickle.dump(results, f)
+	print("Saved face detection results to face_det_results.pkl")
+	print(results.__len__())
+
 	return results 
 
 def datagen(frames, mels):
@@ -118,6 +161,7 @@ def datagen(frames, mels):
 		y1, y2, x1, x2 = args.box
 		face_det_results = [[f[y1: y2, x1:x2], (y1, y2, x1, x2)] for f in frames]
 
+	start = time.time()
 	for i, m in enumerate(mels):
 		idx = 0 if args.static else i%len(frames)
 		frame_to_save = frames[idx].copy()
@@ -138,10 +182,11 @@ def datagen(frames, mels):
 
 			img_batch = np.concatenate((img_masked, img_batch), axis=3) / 255.
 			mel_batch = np.reshape(mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1])
+			print(f"Time taken for datagen: {time.time() - start}")
 
 			yield img_batch, mel_batch, frame_batch, coords_batch
 			img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
-
+			
 	if len(img_batch) > 0:
 		img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
 
@@ -150,33 +195,12 @@ def datagen(frames, mels):
 
 		img_batch = np.concatenate((img_masked, img_batch), axis=3) / 255.
 		mel_batch = np.reshape(mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1])
-
+		print(f"Time taken for datagen: {time.time() - start}")
 		yield img_batch, mel_batch, frame_batch, coords_batch
 
-mel_step_size = 16
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print('Using {} for inference.'.format(device))
+	print(f"Time taken for datagen: {time.time() - start}")
 
-def _load(checkpoint_path):
-	if device == 'cuda':
-		checkpoint = torch.load(checkpoint_path)
-	else:
-		checkpoint = torch.load(checkpoint_path,
-								map_location=lambda storage, loc: storage)
-	return checkpoint
 
-def load_model(path):
-	model = Wav2Lip()
-	print("Load checkpoint from: {}".format(path))
-	checkpoint = _load(path)
-	s = checkpoint["state_dict"]
-	new_s = {}
-	for k, v in s.items():
-		new_s[k.replace('module.', '')] = v
-	model.load_state_dict(new_s)
-
-	model = model.to(device)
-	return model.eval()
 
 def main():
 	if not os.path.isfile(args.face):
@@ -240,17 +264,20 @@ def main():
 		i += 1
 
 	print("Length of mel chunks: {}".format(len(mel_chunks)))
-
-	full_frames = full_frames[:len(mel_chunks)]
+	# save frames to disk
+	for i, frame in enumerate(full_frames):
+		cv2.imwrite(f"temp/{i}.jpg", frame)
+	full_frames = full_frames[:]
 
 	batch_size = args.wav2lip_batch_size
 	gen = datagen(full_frames.copy(), mel_chunks)
 
 	for i, (img_batch, mel_batch, frames, coords) in enumerate(tqdm(gen, 
 											total=int(np.ceil(float(len(mel_chunks))/batch_size)))):
+		
+		print(img_batch.shape, mel_batch.shape)
+		print( frames[0].shape, coords[0])
 		if i == 0:
-			model = load_model(args.checkpoint_path)
-			print ("Model loaded")
 
 			frame_h, frame_w = full_frames[0].shape[:-1]
 			out = cv2.VideoWriter('temp/result.avi', 
